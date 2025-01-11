@@ -11,6 +11,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
 const inputSignals = [
+  { id: 'local_video', name: '本地视频' },
+  { id: 'decklink1', name: 'Decklink 1' },
+  { id: 'decklink2', name: 'Decklink 2' },
   { id: 'hdmi1', name: 'HDMI 1' },
   { id: 'hdmi2', name: 'HDMI 2' },
   { id: 'sdi1', name: 'SDI 1' },
@@ -81,7 +84,19 @@ export default function StreamingPanel({ id }: StreamingPanelProps) {
   const [rateControl, setRateControl] = useState('cbr')
   const [watermark, setWatermark] = useState('none')
   const [isStreaming, setIsStreaming] = useState(false)
+  const [localVideoPath, setLocalVideoPath] = useState('')
   const videoRef = useRef<HTMLVideoElement>(null)
+
+  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (file) {
+      const url = URL.createObjectURL(file)
+      setLocalVideoPath(url)
+      if (videoRef.current) {
+        videoRef.current.src = url
+      }
+    }
+  }
 
   const handleStartStop = () => {
     if (!selectedInterface || !serverUrl) {
@@ -95,9 +110,13 @@ export default function StreamingPanel({ id }: StreamingPanelProps) {
 
   useLayoutEffect(() => {
     if (videoRef.current) {
-      videoRef.current.src = '/placeholder.mp4'
+      if (selectedInterface === 'local_video' && localVideoPath) {
+        videoRef.current.src = localVideoPath
+      } else {
+        videoRef.current.src = '/placeholder.mp4'
+      }
     }
-  }, [selectedInterface])
+  }, [selectedInterface, localVideoPath])
 
   return (
     <motion.div
@@ -169,6 +188,24 @@ export default function StreamingPanel({ id }: StreamingPanelProps) {
                       </SelectContent>
                     </Select>
                   </motion.div>
+
+                  {selectedInterface === 'local_video' && (
+                    <motion.div
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: 'auto' }}
+                      exit={{ opacity: 0, height: 0 }}
+                      className="space-y-2"
+                    >
+                      <Label htmlFor={`video-file-${id}`} className="text-[#9CA3AF] block">选择视频文件</Label>
+                      <Input
+                        id={`video-file-${id}`}
+                        type="file"
+                        accept="video/*"
+                        onChange={handleFileSelect}
+                        className="bg-[#27272A] border-0 h-11 text-white file:bg-purple-600 file:text-white file:border-0 file:rounded-md file:px-4 file:py-2 file:mr-4 hover:file:bg-purple-700"
+                      />
+                    </motion.div>
+                  )}
 
                   <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} className="space-y-2">
                     <Label htmlFor={`server-url-${id}`} className="text-[#9CA3AF] block">服务器地址</Label>
