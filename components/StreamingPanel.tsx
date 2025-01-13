@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef, useLayoutEffect } from 'react'
+import { useState, useRef, useLayoutEffect, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -9,15 +9,11 @@ import { Slider } from "@/components/ui/slider"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import Hls from 'hls.js'
 
 const inputSignals = [
   { id: 'local_video', name: '本地视频' },
-  { id: 'decklink1', name: 'Decklink 1' },
-  { id: 'decklink2', name: 'Decklink 2' },
-  { id: 'hdmi1', name: 'HDMI 1' },
-  { id: 'hdmi2', name: 'HDMI 2' },
-  { id: 'sdi1', name: 'SDI 1' },
-  { id: 'composite1', name: 'Composite 1' },
+  { id: 'capture_card', name: '采集卡' },
 ]
 
 const resolutions = [
@@ -84,39 +80,281 @@ export default function StreamingPanel({ id }: StreamingPanelProps) {
   const [rateControl, setRateControl] = useState('cbr')
   const [watermark, setWatermark] = useState('none')
   const [isStreaming, setIsStreaming] = useState(false)
-  const [localVideoPath, setLocalVideoPath] = useState('')
+  const [isPlaying, setIsPlaying] = useState(false)
+  const [videoList, setVideoList] = useState<Array<{name: string, path: string}>>([])
+  const [selectedVideo, setSelectedVideo] = useState('')
+  const [captureDeviceInfo, setCaptureDeviceInfo] = useState('')
   const videoRef = useRef<HTMLVideoElement>(null)
+  const hlsRef = useRef<Hls | null>(null)
 
-  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
-    if (file) {
-      const url = URL.createObjectURL(file)
-      setLocalVideoPath(url)
-      if (videoRef.current) {
+  // 初始化 HLS
+  const initHls = (url: string) => {
+    if (videoRef.current) {
+      // 先检查浏览器是否支持 HLS
+      console.log('Checking HLS support...')
+      console.log('HLS.js supported:', Hls.isSupported())
+      console.log('Native HLS support:', videoRef.current.canPlayType('application/vnd.apple.mpegurl'))
+
+      if (hlsRef.current) {
+        hlsRef.current.destroy()
+        hlsRef.current = null
+      }
+
+      if (Hls.isSupported()) {
+        console.log('Using HLS.js for playback')
+        const hls = new Hls({
+          debug: true,  // 启用调试模式
+          enableWorker: true,
+          lowLatencyMode: true,
+          backBufferLength: 90,
+          manifestLoadingMaxRetry: 6,
+          manifestLoadingRetryDelay: 1000,
+          manifestLoadingMaxRetryTimeout: 30000,
+          levelLoadingMaxRetry: 6,
+          levelLoadingRetryDelay: 1000,
+          fragLoadingMaxRetry: 6,
+          fragLoadingRetryDelay: 1000
+        })
+
+        hlsRef.current = hls
+
+        // 添加更多事件监听
+        hls.on(Hls.Events.MEDIA_ATTACHED, () => {
+          console.log('HLS Media attached')
+        })
+
+        hls.on(Hls.Events.MANIFEST_LOADING, () => {
+          console.log('HLS Manifest loading')
+        })
+
+        hls.on(Hls.Events.MANIFEST_LOADED, (event, data) => {
+          console.log('HLS Manifest loaded:', data)
+        })
+
+        hls.on(Hls.Events.MANIFEST_PARSED, (event, data) => {
+          console.log('HLS Manifest parsed, found ' + data.levels.length + ' quality level')
+          videoRef.current?.play()
+            .then(() => {
+              setIsPlaying(true)
+              console.log('Playback started')
+            })
+            .catch(error => {
+              console.error('Playback failed:', error)
+              setIsPlaying(false)
+            })
+        })
+
+        hls.on(Hls.Events.ERROR, (event, data) => {
+          console.error('HLS error:', data)
+          if (data.fatal) {
+            switch (data.type) {
+              case Hls.ErrorTypes.NETWORK_ERROR:
+                console.log('Network error, trying to recover...')
+                hls.startLoad()
+                break
+              case Hls.ErrorTypes.MEDIA_ERROR:
+                console.log('Media error, trying to recover...')
+                hls.recoverMediaError()
+                break
+              default:
+                console.log('Fatal error, destroying HLS instance')
+                hls.destroy()
+                hlsRef.current = null
+                setIsPlaying(false)
+                break
+            }
+          }
+        })
+
+        hls.attachMedia(videoRef.current)
+        hls.loadSource(url)
+        console.log('HLS source loaded:', url)
+      } else if (videoRef.current.canPlayType('application/vnd.apple.mpegurl')) {
+        console.log('Using native HLS playback')
         videoRef.current.src = url
+        videoRef.current.addEventListener('loadedmetadata', () => {
+          videoRef.current?.play()
+            .then(() => {
+              setIsPlaying(true)
+              console.log('Native HLS playback started')
+            })
+            .catch(error => {
+              console.error('Native HLS playback failed:', error)
+              setIsPlaying(false)
+            })
+        })
+      } else {
+        console.error('HLS playback not supported')
+        alert('您的浏览器不支持 HLS 播放')
       }
     }
   }
 
+  // 获取视频列表
+  useLayoutEffect(() => {
+    if (selectedInterface === 'local_video') {
+      fetch('http://localhost:8080/api/videos')
+        .then(response => response.json())
+        .then(data => {
+          setVideoList(data)
+        })
+        .catch(error => {
+          console.error('获取视频列表失败:', error)
+        })
+    } else if (selectedInterface === 'capture_card') {
+      // 获取采集卡设备信息
+      fetch('http://localhost:8080/api/capture/devices')
+        .then(response => response.json())
+        .then(data => {
+          setCaptureDeviceInfo(JSON.stringify(data, null, 2))
+        })
+        .catch(error => {
+          console.error('获取采集卡设备信息失败:', error)
+          setCaptureDeviceInfo('获取设备信息失败')
+        })
+    }
+  }, [selectedInterface])
+
+  // 处理视频选择
+  const handleVideoSelect = (value: string) => {
+    setSelectedVideo(value)
+    console.log('Selected video:', value)
+    
+    // 发送请求开始播放流
+    fetch('http://localhost:8080/api/stream/start', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        videoPath: value,
+        streamType: 'play'  // 只启动播放流
+      })
+    })
+    .then(response => {
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`)
+      }
+      return response.json()
+    })
+    .then(data => {
+      console.log('Stream started:', data)
+      // 增加等待时间，并添加重试机制
+      let retryCount = 0
+      const maxRetries = 5
+      const retryInterval = 2000 // 2秒
+
+      const tryInitHls = () => {
+        // 先检查 playlist.m3u8 是否可用
+        fetch('http://localhost:8080/hls/play/playlist.m3u8')
+          .then(response => {
+            if (response.ok) {
+              initHls('http://localhost:8080/hls/play/playlist.m3u8')
+            } else if (retryCount < maxRetries) {
+              console.log(`Playlist not ready, retrying in ${retryInterval/1000}s... (${retryCount + 1}/${maxRetries})`)
+              retryCount++
+              setTimeout(tryInitHls, retryInterval)
+            } else {
+              throw new Error('Max retries reached, playlist not available')
+            }
+          })
+          .catch(error => {
+            if (retryCount < maxRetries) {
+              console.log(`Error checking playlist, retrying in ${retryInterval/1000}s... (${retryCount + 1}/${maxRetries})`)
+              retryCount++
+              setTimeout(tryInitHls, retryInterval)
+            } else {
+              console.error('Failed to start playback:', error)
+              alert('无法开始播放，请重试')
+            }
+          })
+      }
+
+      // 先等待5秒让后端生成初始片段
+      setTimeout(tryInitHls, 5000)
+    })
+    .catch(error => {
+      console.error('Error starting stream:', error)
+      alert(`启动流失败: ${error.message}`)
+    })
+  }
+
+  // 处理开始/停止推流
   const handleStartStop = () => {
-    if (!selectedInterface || !serverUrl) {
-      alert('请选择输入信号并填写服务器地址')
+    if (!selectedVideo) {
+      alert('请选择视频文件')
       return
     }
-    setIsStreaming(!isStreaming)
-    const fullRtmpUrl = streamCode ? `${serverUrl}/${streamCode}` : serverUrl
-    console.log(`推流 ${id} - ${isStreaming ? '停止' : '开始'}推流: 从 ${selectedInterface} 到 ${fullRtmpUrl}, 分辨率: ${resolution}, 帧率: ${frameRate}fps, CPU预设: ${cpuPreset}, 关键帧间隔: ${keyframeInterval}s, 码率控制: ${rateControl}, 视频编码器: x264, 视频码率: ${videoBitrate}kbps, 音频编码器: AAC, 音频码率: ${audioBitrate}kbps, 水印: ${watermark}`)
+
+    if (isStreaming) {
+      // 停止推流
+      fetch('http://localhost:8080/api/stream/stop', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          streamType: 'push'
+        })
+      }).then(() => {
+        console.log('Stream stopped')
+        setIsStreaming(false)
+      })
+    } else {
+      // 开始推流，传递所有推流参数
+      fetch('http://localhost:8080/api/stream/start', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          videoPath: selectedVideo,
+          streamType: 'push',
+          rtmpUrl: serverUrl,           // RTMP服务器地址
+          streamKey: streamCode,        // 推流码
+          resolution: resolution,       // 分辨率
+          frameRate: frameRate,        // 帧率
+          videoBitrate: videoBitrate,  // 视频码率
+          audioBitrate: audioBitrate,  // 音频码率
+          cpuPreset: cpuPreset,        // CPU预设
+          keyframeInterval: parseInt(keyframeInterval), // 关键帧间隔
+          rateControl: rateControl,     // 码率控制
+          watermark: watermark         // 水印设置
+        })
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`)
+        }
+        return response.json()
+      })
+      .then(data => {
+        console.log('Push stream started:', data)
+        setIsStreaming(true)
+      })
+      .catch(error => {
+        console.error('Error starting push stream:', error)
+        alert(`启动推流失败: ${error.message}`)
+      })
+    }
   }
+
+  // 组件卸载时清理 HLS 实例和状态
+  useEffect(() => {
+    return () => {
+      if (hlsRef.current) {
+        hlsRef.current.destroy()
+        hlsRef.current = null
+        setIsPlaying(false)
+      }
+    }
+  }, [])
 
   useLayoutEffect(() => {
     if (videoRef.current) {
-      if (selectedInterface === 'local_video' && localVideoPath) {
-        videoRef.current.src = localVideoPath
-      } else {
-        videoRef.current.src = '/placeholder.mp4'
-      }
+      videoRef.current.src = '/placeholder.mp4'
     }
-  }, [selectedInterface, localVideoPath])
+  }, [selectedInterface])
 
   return (
     <motion.div
@@ -153,14 +391,14 @@ export default function StreamingPanel({ id }: StreamingPanelProps) {
                 </motion.div>
 
                 <AnimatePresence>
-                  {isStreaming && (
+                  {isPlaying && (
                     <motion.div
                       initial={{ opacity: 0 }}
                       animate={{ opacity: 1 }}
                       exit={{ opacity: 0 }}
                       className="bg-green-500 text-white p-2 rounded-md text-center h-10 flex items-center justify-center"
                     >
-                      正在推流
+                      正在播放
                     </motion.div>
                   )}
                 </AnimatePresence>
@@ -196,14 +434,40 @@ export default function StreamingPanel({ id }: StreamingPanelProps) {
                       exit={{ opacity: 0, height: 0 }}
                       className="space-y-2"
                     >
-                      <Label htmlFor={`video-file-${id}`} className="text-[#9CA3AF] block">选择视频文件</Label>
-                      <Input
-                        id={`video-file-${id}`}
-                        type="file"
-                        accept="video/*"
-                        onChange={handleFileSelect}
-                        className="bg-[#27272A] border-0 h-11 text-white file:bg-purple-600 file:text-white file:border-0 file:rounded-md file:px-4 file:py-2 file:mr-4 hover:file:bg-purple-700"
-                      />
+                      <Label htmlFor={`video-select-${id}`} className="text-[#9CA3AF] block">选择视频文件</Label>
+                      <Select value={selectedVideo} onValueChange={handleVideoSelect}>
+                        <SelectTrigger 
+                          id={`video-select-${id}`}
+                          className="bg-[#27272A] border-0 h-11 text-white"
+                        >
+                          <SelectValue placeholder="请选择视频文件" />
+                        </SelectTrigger>
+                        <SelectContent className="bg-[#27272A] border-0">
+                          {videoList.map((video) => (
+                            <SelectItem 
+                              key={video.path} 
+                              value={video.path}
+                              className="text-white hover:bg-[#3F3F46] focus:bg-[#3F3F46]"
+                            >
+                              {video.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </motion.div>
+                  )}
+
+                  {selectedInterface === 'capture_card' && (
+                    <motion.div
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: 'auto' }}
+                      exit={{ opacity: 0, height: 0 }}
+                      className="space-y-2"
+                    >
+                      <Label className="text-[#9CA3AF] block">采集卡设备信息</Label>
+                      <pre className="bg-[#27272A] p-4 rounded-md text-sm text-white overflow-auto">
+                        {captureDeviceInfo || '加载设备信息中...'}
+                      </pre>
                     </motion.div>
                   )}
 
@@ -408,9 +672,8 @@ export default function StreamingPanel({ id }: StreamingPanelProps) {
                 className="w-64"
               >
                 <Button 
-                  onClick={handleStartStop} 
-                  className="w-full h-11 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white border-0"
-                  disabled={!selectedInterface || !serverUrl}
+                  onClick={handleStartStop}
+                  className={`w-full ${isStreaming ? 'bg-red-500 hover:bg-red-600' : 'bg-green-500 hover:bg-green-600'}`}
                 >
                   {isStreaming ? '停止推流' : '开始推流'}
                 </Button>

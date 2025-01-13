@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>视频流管理</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #1a1a1a;
+            color: #ffffff;
+        }
+        .container {
+            background-color: #2d2d2d;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+        .input-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #cccccc;
+        }
+        select {
+            width: 100%;
+            padding: 10px;
+            margin-bottom: 10px;
+            border: 1px solid #444;
+            border-radius: 4px;
+            background-color: #333;
+            color: #fff;
+            cursor: pointer;
+        }
+        .file-input {
+            display: none;
+        }
+        .file-label {
+            display: inline-block;
+            padding: 10px 20px;
+            background-color: #8e44ad;
+            color: white;
+            border-radius: 4px;
+            cursor: pointer;
+            text-align: center;
+            margin-bottom: 10px;
+            width: calc(100% - 40px);
+        }
+        .file-label:hover {
+            background-color: #9b59b6;
+        }
+        #selectedFileName {
+            margin-top: 10px;
+            color: #aaa;
+        }
+        #videoList {
+            width: 100%;
+            margin-top: 10px;
+            display: none;
+        }
+        .device-info {
+            display: none;
+            padding: 10px;
+            background-color: #333;
+            border-radius: 4px;
+            margin-top: 10px;
+            color: #aaa;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="input-group">
+            <label>输入信号</label>
+            <select id="inputSource" onchange="handleInputSourceChange()">
+                <option value="local">本地视频</option>
+                <option value="capture">采集卡</option>
+            </select>
+        </div>
+        
+        <div class="input-group" id="localVideoGroup">
+            <select id="videoList" onchange="handleVideoSelect()">
+                <option value="">选择视频文件</option>
+            </select>
+            <div id="selectedFileName">未选择文件</div>
+        </div>
+
+        <div class="input-group" id="captureGroup" style="display: none;">
+            <div class="device-info">
+                采集卡设备信息将在这里显示
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function handleInputSourceChange() {
+            const inputSource = document.getElementById('inputSource').value;
+            const videoList = document.getElementById('videoList');
+            const localVideoGroup = document.getElementById('localVideoGroup');
+            const captureGroup = document.getElementById('captureGroup');
+
+            if (inputSource === 'local') {
+                localVideoGroup.style.display = 'block';
+                captureGroup.style.display = 'none';
+                videoList.style.display = 'block';
+                // 获取可用的视频文件列表
+                fetch('http://localhost:8080/api/videos')
+                    .then(response => response.json())
+                    .then(videos => {
+                        videoList.innerHTML = '<option value="">选择视频文件</option>';
+                        videos.forEach(video => {
+                            const option = document.createElement('option');
+                            option.value = video.path;
+                            option.textContent = video.name;
+                            videoList.appendChild(option);
+                        });
+                    })
+                    .catch(error => console.error('Error fetching videos:', error));
+            } else {
+                localVideoGroup.style.display = 'none';
+                captureGroup.style.display = 'block';
+                videoList.style.display = 'none';
+            }
+        }
+
+        function handleVideoSelect() {
+            const videoList = document.getElementById('videoList');
+            const selectedVideo = videoList.value;
+            
+            if (selectedVideo) {
+                // 将文件路径转换为base64
+                const videoPath = btoa(selectedVideo);
+                
+                // 发送请求启动play流
+                fetch('http://localhost:8080/api/stream/start', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        videoPath: videoPath,
+                        streamType: 'play'
+                    })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    console.log('Stream started:', data);
+                    alert('流已启动，可以使用VLC播放器打开: http://localhost:8080/hls/play/playlist.m3u8');
+                })
+                .catch(error => {
+                    console.error('Error starting stream:', error);
+                    alert('启动流失败，请检查服务器是否正在运行');
+                });
+            }
+        }
+
+        // 页面加载时初始化
+        window.onload = function() {
+            handleInputSourceChange();
+        };
+    </script>
+</body>
+</html> 
